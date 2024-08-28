@@ -33,7 +33,6 @@ def _convert_chunk_to_message_chunk(
     message = sse_data.get("message")
     role = message.get("role")
     content = message.get("content") or ""
-
     if role == "user" or default_class == HumanMessageChunk:
         return HumanMessageChunk(content=content)
     elif role == "assistant" or default_class == AIMessageChunk:
@@ -93,6 +92,8 @@ async def _aiter_sse(
             event_data = sse.json()
             if sse.event == "signal" and event_data.get("data", {}) == "[DONE]":
                 return
+            if sse.event == "result":
+                return
             yield sse
 
 
@@ -151,7 +152,7 @@ class ChatClovaX(BaseChatModel):
     ncp_apigw_api_key: Optional[SecretStr] = Field(default=None, alias="apigw_api_key")
     """Automatically inferred from env are `NCP_APIGW_API_KEY` if not provided."""
 
-    base_url: Optional[str] = Field(default=DEFAULT_BASE_URL, alias="ncp_clovastudio_api_base_url")
+    base_url: Optional[str] = Field(default=None, alias="clovastudio_api_base_url")
     """Automatically inferred from env are `NCP_CLOVASTUDIO_API_BASE_URL` if not provided."""
 
     temperature: Optional[float] = None
@@ -164,7 +165,7 @@ class ChatClovaX(BaseChatModel):
     seed: Optional[int] = None
 
     timeout: int = 90
-    max_retries: int = 3
+    max_retries: int = 2
 
     class Config:
         """Configuration for this pydantic object."""
@@ -224,7 +225,7 @@ class ChatClovaX(BaseChatModel):
         app_type = "serviceapp" if self.service_app else "testapp"
 
         if self.task_id:
-            return f"{self.base_url}/{app_type}/v2/tasks/{self.task_id}/chat-completions"
+            return f"{self.base_url}/{app_type}/v1/tasks/{self.task_id}/chat-completions"
         else:
             return f"{self.base_url}/{app_type}/v1/chat-completions/{self.model_name}"
 
@@ -250,15 +251,14 @@ class ChatClovaX(BaseChatModel):
 
         if not (values["model_name"] or values["task_id"]):
             raise ValueError("either model_name or task_id must be assigned a value.")
-
         """Validate that api key and python package exists in environment."""
         values["ncp_clovastudio_api_key"] = convert_to_secret_str(
             get_from_dict_or_env(values, "ncp_clovastudio_api_key", "NCP_CLOVASTUDIO_API_KEY")
         )
         values["ncp_apigw_api_key"] = convert_to_secret_str(
-            get_from_dict_or_env(values, "ncp_apigw_api_key", "NCP_APIGW_API_KEY")
+            get_from_dict_or_env(values, "ncp_apigw_api_key", "NCP_APIGW_API_KEY", "ncp_apigw_api_key")
         )
-        values["base_url"] = get_from_dict_or_env(values, "base_url", "NCP_CLOVASTUDIO_API_BASE_URL")
+        values["base_url"] = get_from_dict_or_env(values, "base_url", "NCP_CLOVASTUDIO_API_BASE_URL", DEFAULT_BASE_URL)
 
         if not values.get("client"):
             values["client"] = httpx.Client(
@@ -314,6 +314,8 @@ class ChatClovaX(BaseChatModel):
                     for sse in event_source.iter_sse():
                         event_data = sse.json()
                         if sse.event == "signal" and event_data.get("data", {}) == "[DONE]":
+                            return
+                        if sse.event == "result":
                             return
                         if sse.event == "error":
                             raise SSEError(message=sse.data)
